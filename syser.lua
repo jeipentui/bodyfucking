@@ -288,32 +288,41 @@ local ESP_NameText = {}
 local ESP_WeaponText = {}
 local ESP_Boxes = {}
 local partCache = {}
+local characterCache = {} -- Кеш для персонажей игроков
 
 -- Функция для полной очистки ESP игрока
 local function cleanupPlayerESP(plr)
     if ESP_Lines[plr] then
         for _, line in pairs(ESP_Lines[plr]) do
-            line.Visible = false
-            line:Remove()
+            if line then
+                line.Visible = false
+                line:Remove()
+            end
         end
         ESP_Lines[plr] = nil
     end
     
     if ESP_HPText[plr] then
-        ESP_HPText[plr].Visible = false
-        ESP_HPText[plr]:Remove()
+        if ESP_HPText[plr] then
+            ESP_HPText[plr].Visible = false
+            ESP_HPText[plr]:Remove()
+        end
         ESP_HPText[plr] = nil
     end
     
     if ESP_NameText[plr] then
-        ESP_NameText[plr].Visible = false
-        ESP_NameText[plr]:Remove()
+        if ESP_NameText[plr] then
+            ESP_NameText[plr].Visible = false
+            ESP_NameText[plr]:Remove()
+        end
         ESP_NameText[plr] = nil
     end
     
     if ESP_WeaponText[plr] then
-        ESP_WeaponText[plr].Visible = false
-        ESP_WeaponText[plr]:Remove()
+        if ESP_WeaponText[plr] then
+            ESP_WeaponText[plr].Visible = false
+            ESP_WeaponText[plr]:Remove()
+        end
         ESP_WeaponText[plr] = nil
     end
     
@@ -331,6 +340,7 @@ local function cleanupPlayerESP(plr)
     
     -- Очищаем кеш частей
     partCache[plr] = nil
+    characterCache[plr] = nil
 end
 
 -- Функция для создания ESP объектов
@@ -394,82 +404,83 @@ local function createESPObjects(plr)
     
     -- Инициализируем кеш частей
     partCache[plr] = {}
-end
-
--- Функция для скрытия всех ESP объектов игрока
-local function hidePlayerESP(plr)
-    if ESP_Lines[plr] then
-        for _, line in pairs(ESP_Lines[plr]) do
-            line.Visible = false
-        end
-    end
+    characterCache[plr] = plr.Character
     
-    if ESP_HPText[plr] then
-        ESP_HPText[plr].Visible = false
-    end
-    
-    if ESP_NameText[plr] then
-        ESP_NameText[plr].Visible = false
-    end
-    
-    if ESP_WeaponText[plr] then
-        ESP_WeaponText[plr].Visible = false
-    end
-    
-    if ESP_Boxes[plr] then
-        ESP_Boxes[plr].box.Visible = false
-        ESP_Boxes[plr].boxoutline.Visible = false
-    end
-end
-
--- Функция кеширования частей персонажа
-local function cachePlayerParts(plr)
-    partCache[plr] = {}
-    
-    local function cacheCharacterParts(char)
-        if not char then return end
-        
-        -- Очищаем старый кеш
-        partCache[plr] = {}
-        
-        -- Даем время для загрузки персонажа
-        task.wait(0.1)
-        
-        -- Кешируем все BasePart
-        for _, part in ipairs(char:GetChildren()) do
+    -- Кешируем части персонажа
+    if plr.Character then
+        for _, part in ipairs(plr.Character:GetChildren()) do
             if part:IsA("BasePart") then
                 partCache[plr][part] = true
             end
         end
+        
+        -- Подключаем обработчик изменения персонажа
+        plr.CharacterAdded:Connect(function(char)
+            characterCache[plr] = char
+            partCache[plr] = {}
+            
+            task.wait(0.1) -- Даем время на загрузку
+            
+            for _, part in ipairs(char:GetChildren()) do
+                if part:IsA("BasePart") then
+                    partCache[plr][part] = true
+                end
+            end
+        end)
+    end
+end
+
+-- Функция для проверки, нужно ли создать ESP
+local function shouldCreateESP(plr)
+    local char = plr.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") or char.Humanoid.Health <= 0 then
+        return false
     end
     
-    -- Подключаем обработчики
-    if plr.Character then
-        cacheCharacterParts(plr.Character)
-    end
+    local hrp = char.HumanoidRootPart
+    local dist = (Camera.CFrame.Position - hrp.Position).Magnitude
     
-    local connection
-    connection = plr.CharacterAdded:Connect(function(char)
-        cacheCharacterParts(char)
-    end)
-    
-    -- Храним соединение для очистки
-    return connection
+    return dist <= ESP_MaxDistance
 end
 
 --==================== Update ESP ====================
 local function UpdateESP(plr)
     local char = plr.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") or char.Humanoid.Health <= 0 then
-        hidePlayerESP(plr)
+        -- Игрок мертв или нет персонажа - удаляем ESP
+        if ESP_Lines[plr] then
+            cleanupPlayerESP(plr)
+        end
         return
     end
     
     local hrp = char.HumanoidRootPart
     local dist = (Camera.CFrame.Position - hrp.Position).Magnitude
+    
+    -- Если игрок ВНЕ зоны видимости
     if dist > ESP_MaxDistance then
-        hidePlayerESP(plr)
+        -- Если у него есть ESP объекты - удаляем их
+        if ESP_Lines[plr] then
+            cleanupPlayerESP(plr)
+        end
         return
+    end
+    
+    -- Если игрок В зоне видимости, но ESP объектов нет - создаем их
+    if not ESP_Lines[plr] then
+        createESPObjects(plr)
+    end
+    
+    -- Проверяем, не изменился ли персонаж
+    if characterCache[plr] ~= char then
+        characterCache[plr] = char
+        partCache[plr] = {}
+        
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                partCache[plr][part] = true
+            end
+        end
     end
     
     local color = isFriend(plr) and Settings.Friend_Color or Settings.ESP_Color
@@ -622,11 +633,17 @@ end
 local function initPlayer(plr)
     if plr == localPlayer then return end
     
-    -- Создаем ESP объекты
-    createESPObjects(plr)
+    -- Создаем ESP объекты только если игрок в зоне видимости
+    if shouldCreateESP(plr) then
+        createESPObjects(plr)
+    end
     
-    -- Кешируем части персонажа
-    cachePlayerParts(plr)
+    -- Подключаем обработчик смерти/возрождения
+    plr.CharacterAdded:Connect(function(char)
+        if shouldCreateESP(plr) then
+            createESPObjects(plr)
+        end
+    end)
 end
 
 -- Инициализируем существующих игроков
@@ -851,22 +868,6 @@ local ESPDistanceSlider = ESPTab:CreateSlider({
     end,
 })
 
--- Кнопка для очистки всех ESP объектов
-local CleanupESPButton = ESPTab:CreateButton({
-    Name = "Очистить ESP (Fix Memory)",
-    Callback = function()
-        for plr, _ in pairs(ESP_Lines) do
-            cleanupPlayerESP(plr)
-        end
-        Rayfield:Notify({
-            Title = "ESP Cleanup",
-            Content = "Все ESP объекты очищены",
-            Duration = 2,
-            Image = 4483362458,
-        })
-    end,
-})
-
 -- Misc Tab
 local FullbrightToggle = MiscTab:CreateToggle({
     Name = "Fullbright",
@@ -946,13 +947,10 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- ESP Update
-    for plr, _ in pairs(ESP_Lines) do
-        if plr and plr.Parent then
+    -- ESP Update для всех игроков
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= localPlayer and plr.Parent then
             UpdateESP(plr)
-        else
-            -- Игрок больше не существует, очищаем
-            cleanupPlayerESP(plr)
         end
     end
 end)
@@ -961,7 +959,7 @@ end)
 Rayfield:LoadConfiguration()
 Rayfield:Notify({
     Title = "thw club",
-    Content = "Script loaded successfully!\nСтабильный aimlock активирован - цель будет удерживаться до выхода из FOV\nESP оптимизирован - утечки памяти исправлены",
+    Content = "Script loaded successfully!\nСтабильный aimlock активирован - цель будет удерживаться до выхода из FOV\nESP оптимизирован - автоматически удаляется при выходе из зоны видимости",
     Duration = 5,
     Image = 4483362458,
 })
